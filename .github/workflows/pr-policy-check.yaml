@@ -1,0 +1,54 @@
+name: PR Policy Check
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches:
+      - "release/*"
+
+jobs:
+  check-main-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Check for main branch PR
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const prBranch = context.payload.pull_request.head.ref;
+            const prTitle = context.payload.pull_request.title;
+            const prBody = context.payload.pull_request.body || '';
+
+            // Search for PRs targeting main branch from the same source branch
+            const mainPRs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.payload.pull_request.head.user.login}:${prBranch}`,
+              base: 'main'
+            });
+
+            if (mainPRs.data.length === 0) {
+              core.setFailed(`
+                ❌ No corresponding PR found targeting the main branch.
+                
+                Please create a pull request from '${prBranch}' to 'main' before proceeding with this release branch PR.
+                
+                This is required to ensure changes are properly synchronized across branches.
+                
+                You can create a new PR to main using this link:
+                ${context.payload.repository.html_url}/compare/main...${prBranch}
+              `);
+            } else {
+              console.log(`✅ Found corresponding PR to main: ${mainPRs.data[0].html_url}`);
+              
+              // Optional: Add a comment to link the PRs together
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: `This PR has a corresponding PR to main: ${mainPRs.data[0].html_url}`
+              });
+            }
