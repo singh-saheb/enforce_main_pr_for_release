@@ -12,43 +12,70 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Fetch all history to compare commits
 
       - name: Check for main branch PR
         uses: actions/github-script@v6
         with:
           script: |
-            const prBranch = context.payload.pull_request.head.ref;
-            const prTitle = context.payload.pull_request.title;
-            const prBody = context.payload.pull_request.body || '';
+            // Get the commits in this PR
+            const currentPR = context.payload.pull_request;
+            const commits = await github.rest.pulls.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: currentPR.number
+            });
 
-            // Search for PRs targeting main branch from the same source branch
+            const prCommitShas = commits.data.map(commit => commit.sha);
+
+            // Search for all open PRs targeting main
             const mainPRs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              head: `${context.payload.pull_request.head.user.login}:${prBranch}`,
               base: 'main'
             });
 
-            if (mainPRs.data.length === 0) {
+            let foundMatchingPR = false;
+            let matchingPRUrl = '';
+
+            // For each PR to main, check if it contains the same commits
+            for (const mainPR of mainPRs.data) {
+              const mainPRCommits = await github.rest.pulls.listCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: mainPR.number
+              });
+              
+              const mainPRCommitShas = mainPRCommits.data.map(commit => commit.sha);
+              
+              // Check if all commits from the release PR are present in this main PR
+              const hasAllCommits = prCommitShas.every(sha => 
+                mainPRCommitShas.includes(sha)
+              );
+              
+              if (hasAllCommits) {
+                foundMatchingPR = true;
+                matchingPRUrl = mainPR.html_url;
+                break;
+              }
+            }
+
+            if (!foundMatchingPR) {
               core.setFailed(`
-                ❌ No corresponding PR found targeting the main branch.
-                
-                Please create a pull request from '${prBranch}' to 'main' before proceeding with this release branch PR.
-                
+                ❌ No corresponding PR found targeting the main branch with the same commits.
+                Please ensure these commits are also proposed for the main branch:
+                ${prCommitShas.join('\n')}
                 This is required to ensure changes are properly synchronized across branches.
-                
-                You can create a new PR to main using this link:
-                ${context.payload.repository.html_url}/compare/main...${prBranch}
+                You can create a new PR to main from a branch containing these commits.
               `);
             } else {
-              console.log(`✅ Found corresponding PR to main: ${mainPRs.data[0].html_url}`);
-              
-              // Optional: Add a comment to link the PRs together
+              console.log(`✅ Found corresponding PR to main: ${matchingPRUrl}`);
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body: `This PR has a corresponding PR to main: ${mainPRs.data[0].html_url}`
+                issue_number: currentPR.number,
+                body: `This PR has a corresponding PR to main that includes the same commits: ${matchingPRUrl}`
               });
             }
